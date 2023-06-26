@@ -1489,7 +1489,7 @@ namespace FamiStudio
             if (betaNumber > 0)
                 title += $" - BETA {betaNumber} - DEVELOPMENT VERSION DO NOT DISTRIBUTE!";
 
-            window.Text = title;
+            window.Text = System.Text.Encoding.Default.GetString(System.Text.Encoding.Convert(System.Text.Encoding.Unicode, System.Text.Encoding.Default, System.Text.Encoding.Unicode.GetBytes(title)));
         }
 
         public void ShowInstrumentError(Channel channel, bool beep)
