@@ -26,8 +26,6 @@ namespace FamiStudio
         public MobilePiano     MobilePiano     => mobilePiano;
         public Control         ActiveControl   => activeControl;
 
-        public bool IsLandscape => width > height;
-        
         public bool MobilePianoVisible
         {
             get { return mobilePiano.Visible; }
@@ -141,6 +139,12 @@ namespace FamiStudio
         public override bool CanInteractWithContainer(Container c)
         {
             if (!CanAcceptInput)
+            {
+                return false;
+            }
+
+            // HACK: If you expand the toolbar, you can actually click on the quick access bar.
+            if (toolbar.IsExpanded && c != toolbar)
             {
                 return false;
             }

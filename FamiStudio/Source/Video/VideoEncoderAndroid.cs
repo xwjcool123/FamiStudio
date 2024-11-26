@@ -6,12 +6,197 @@ using System;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
-using Debug = System.Diagnostics.Debug;
+using Xamarin.Essentials;
 
 namespace FamiStudio
 {
+    public class VideoEncoderAndroidEglBase
+    {
+        protected const int EGL_RECORDABLE_ANDROID = 0x3142;
+
+        protected Surface surface;
+
+        protected EGLDisplay eglDisplay = EGL14.EglNoDisplay;
+        protected EGLContext eglContext = EGL14.EglNoContext;
+        protected EGLSurface eglSurface = EGL14.EglNoSurface;
+
+        protected EGLDisplay prevEglDisplay;
+        protected EGLContext prevEglContext;
+        protected EGLSurface prevEglSurfaceRead;
+        protected EGLSurface prevEglSurfaceDraw;
+
+        protected bool ElgInitialize(int surfaceResX = 0, int surfaceResY = 0)
+        {
+            prevEglContext = EGL14.EglGetCurrentContext();
+            prevEglDisplay = EGL14.EglGetCurrentDisplay();
+            prevEglSurfaceRead = EGL14.EglGetCurrentSurface(EGL14.EglRead);
+            prevEglSurfaceDraw = EGL14.EglGetCurrentSurface(EGL14.EglDraw);
+
+            eglDisplay = EGL14.EglGetDisplay(EGL14.EglDefaultDisplay);
+            if (eglDisplay == EGL14.EglNoDisplay)
+                return false;
+
+            int[] version = new int[2];
+            if (!EGL14.EglInitialize(eglDisplay, version, 0, version, 1))
+                return false;
+
+            // Configure EGL for recording and OpenGL ES 2.0.
+            int[] attribList =
+            {
+                EGL14.EglRedSize, 8,
+                EGL14.EglGreenSize, 8,
+                EGL14.EglBlueSize, 8,
+                EGL14.EglAlphaSize, 8,
+                EGL14.EglDepthSize, 16,
+                EGL14.EglRenderableType, EGL14.EglOpenglEsBit,
+                EGL_RECORDABLE_ANDROID, 1,
+                EGL14.EglNone
+            };
+            EGLConfig[] configs = new EGLConfig[1];
+            int[] numConfigs = new int[1];
+            EGL14.EglChooseConfig(eglDisplay, attribList, 0, configs, 0, configs.Length, numConfigs, 0);
+            CheckEglError();
+
+            // Configure context for OpenGL ES 2.0.
+            int[] attrib_list =
+            {
+                EGL14.EglContextClientVersion, 2,
+                EGL14.EglNone
+            };
+            eglContext = EGL14.EglCreateContext(eglDisplay, configs[0], EGL14.EglNoContext, attrib_list, 0);
+            CheckEglError();
+
+            if (surface != null)
+            {
+                int[] surfaceAttribs = { EGL14.EglNone };
+                eglSurface = EGL14.EglCreateWindowSurface(eglDisplay, configs[0], surface, surfaceAttribs, 0);
+            }
+            else
+            {
+                int[] surfaceAttribs = 
+                {
+                    EGL14.EglWidth,  surfaceResX,
+                    EGL14.EglHeight, surfaceResY,
+                    EGL14.EglTextureFormat, EGL14.EglTextureRgba,
+                    EGL14.EglTextureTarget, EGL14.EglTexture2d,
+                    EGL14.EglNone
+                };
+                eglSurface = EGL14.EglCreatePbufferSurface(eglDisplay, configs[0], surfaceAttribs, 0);
+            }
+            CheckEglError();
+
+            EGL14.EglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext);
+            CheckEglError();
+
+            return true;
+        }
+
+        protected void ElgShutdown()
+        {
+            if (eglDisplay != EGL14.EglNoDisplay)
+            {
+                EGL14.EglMakeCurrent(eglDisplay, EGL14.EglNoSurface, EGL14.EglNoSurface, EGL14.EglNoContext);
+                EGL14.EglDestroySurface(eglDisplay, eglSurface);
+                EGL14.EglDestroyContext(eglDisplay, eglContext);
+                EGL14.EglReleaseThread();
+                EGL14.EglTerminate(eglDisplay);
+            }
+
+            surface?.Release();
+
+            eglDisplay = EGL14.EglNoDisplay;
+            eglContext = EGL14.EglNoContext;
+            eglSurface = EGL14.EglNoSurface;
+
+            surface = null;
+
+            EGL14.EglMakeCurrent(prevEglDisplay, prevEglSurfaceDraw, prevEglSurfaceRead, prevEglContext);
+        }
+
+        protected void CheckEglError()
+        {
+            Debug.Assert(EGL14.EglGetError() == EGL14.EglSuccess);
+        }
+    }
+
+    public class AndroidPreviewEncoder : VideoEncoderAndroidEglBase, IVideoEncoder, ILogOutput
+    {
+        private PropertyPage page;
+        private int propIdx;
+        private int previewResX;
+        private int previewResY;
+        private bool abort;
+        private float targetFrameTime;
+        private double lastFrameTime = -1;
+
+        public bool AbortOperation => abort;
+
+        public AndroidPreviewEncoder(PropertyPage p, int idx)
+        {
+            page = p;
+            propIdx = idx;
+        }
+
+        public bool BeginEncoding(int resX, int resY, int rateNumer, int rateDenom, int videoBitRate, int audioBitRate, bool stereo, string audioFile, string outputFile)
+        {
+            if (!ElgInitialize(resX, resY))
+                return false;
+
+            previewResX = resX;
+            previewResY = resY;
+            targetFrameTime = rateDenom / (float)rateNumer;
+            lastFrameTime = Platform.TimeSeconds();
+
+            var black = new byte[previewResX * previewResY * 4];
+            for (int i = 3; i < black.Length; i += 4)
+                black[i] = 0xff;
+
+            MainThread.InvokeOnMainThreadAsync(() => page.UpdateImageBox(propIdx, previewResX, previewResY, black));
+
+            return true;
+        }
+
+        public bool AddFrame(OffscreenGraphics graphics)
+        {
+            EGL14.EglSwapBuffers(eglDisplay, eglSurface);
+            CheckEglError();
+
+            var buffer = new byte[previewResX * previewResY * 4];
+            graphics.GetBitmap(buffer); 
+            
+            MainThread.InvokeOnMainThreadAsync(() => page.UpdateImageBox(propIdx, previewResX, previewResY, buffer));
+
+            // Throttle to mimic target FPS.
+            var currentFrameTime = Platform.TimeSeconds();
+            var delta = currentFrameTime - lastFrameTime;
+            if (delta < targetFrameTime)
+                System.Threading.Thread.Sleep((int)((targetFrameTime - delta) * 1000));
+
+            lastFrameTime = currentFrameTime;
+
+            return !abort;
+        }
+
+        public void EndEncoding(bool abort)
+        {
+        }
+
+        public void Abort()
+        {
+            abort = true;
+        }
+
+        public void LogMessage(string msg)
+        {
+        }
+
+        public void ReportProgress(float progress)
+        {
+        }
+    }
+
     // Based off https://bigflake.com/mediacodec/. Thanks!!!
-    class VideoEncoderAndroid
+    public class VideoEncoderAndroid : VideoEncoderAndroidEglBase, IVideoEncoder
     {
         const long SecondsToMicroSeconds = 1000000;
         const long SecondsToNanoSeconds  = 1000000000;
@@ -19,7 +204,6 @@ namespace FamiStudio
         private readonly string VideoMimeType = "video/avc";       // H.264 Advanced Video Coding
         private readonly string AudioMimeType = "audio/mp4a-latm"; // AAC
 
-        private Surface surface;
         private MediaCodec videoEncoder;
         private MediaCodec audioEncoder;
         private MediaMuxer muxer;
@@ -40,27 +224,8 @@ namespace FamiStudio
         private MediaCodec.BufferInfo videoBufferInfo;
         private MediaCodec.BufferInfo audioBufferInfo;
 
-        private const int EGL_RECORDABLE_ANDROID = 0x3142;
-
-        private EGLDisplay eglDisplay = EGL14.EglNoDisplay;
-        private EGLContext eglContext = EGL14.EglNoContext;
-        private EGLSurface eglSurface = EGL14.EglNoSurface;
-
-        private EGLDisplay prevEglDisplay;
-        private EGLContext prevEglContext;
-        private EGLSurface prevEglSurfaceRead;
-        private EGLSurface prevEglSurfaceDraw;
-
-        public bool AlternateByteOrdering => false;
-
-        private VideoEncoderAndroid()
+        public VideoEncoderAndroid()
         {
-        }
-
-        public static VideoEncoderAndroid CreateInstance()
-        {
-            // TODO : Check support!
-            return new VideoEncoderAndroid();
         }
 
         // https://github.com/lanhq147/SampleMediaFrame/blob/e2f20ff9eef73318e5a9b4de15458c5c2eb0fd46/app/src/main/java/com/google/android/exoplayer2/video/av/HWRecorder.java
@@ -81,7 +246,7 @@ namespace FamiStudio
             videoFormat.SetInteger(MediaFormat.KeyIFrameInterval, 4);
             videoFormat.SetInteger(MediaFormat.KeyProfile, (int)MediaCodecProfileType.Avcprofilehigh);
             videoFormat.SetInteger(MediaFormat.KeyLevel, (int)MediaCodecProfileLevel.Avclevel31);
-
+            
             videoEncoder = MediaCodec.CreateEncoderByType(VideoMimeType);
             videoEncoder.Configure(videoFormat, null, null, MediaCodecConfigFlags.Encode);
             surface = videoEncoder.CreateInputSurface();
@@ -148,14 +313,13 @@ namespace FamiStudio
             int index = audioEncoder.DequeueInputBuffer(-1);
             if (index >= 0)
             {
-                ByteBuffer[] inputBuffers = audioEncoder.GetInputBuffers();
-                ByteBuffer buffer = inputBuffers[index];
+                ByteBuffer buffer = audioEncoder.GetInputBuffer(index);
 
                 var len = Utils.Clamp(audioData.Length - audioDataIdx, 0, buffer.Remaining());
                 buffer.Clear();
                 buffer.Put(audioData, audioDataIdx, len);
 
-                long presentationTime = (audioDataIdx * SecondsToMicroSeconds) / (44100 * 2 * numAudioChannels);
+                long presentationTime = (audioDataIdx * SecondsToMicroSeconds) / (44100 * sizeof(short) * numAudioChannels);
                 audioDataIdx += len;
 
                 var done = audioDataIdx == audioData.Length;
@@ -165,7 +329,7 @@ namespace FamiStudio
             return audioDataIdx < audioData.Length;
         }
 
-        public void AddFrame(byte[] image)
+        public bool AddFrame(OffscreenGraphics graphics)
         {
             Debug.WriteLine($"Sending frame {frameIndex} to encoder");
 
@@ -177,6 +341,8 @@ namespace FamiStudio
             CheckEglError();
 
             DrainEncoder(videoEncoder, videoBufferInfo, videoTrackIndex, false);
+            
+            return true;
         }
 
         public void EndEncoding(bool abort)
@@ -221,84 +387,6 @@ namespace FamiStudio
             }
         }
 
-        private bool ElgInitialize()
-        {
-            prevEglContext = EGL14.EglGetCurrentContext();
-            prevEglDisplay = EGL14.EglGetCurrentDisplay();
-            prevEglSurfaceRead = EGL14.EglGetCurrentSurface(EGL14.EglRead);
-            prevEglSurfaceDraw = EGL14.EglGetCurrentSurface(EGL14.EglDraw);
-
-            eglDisplay = EGL14.EglGetDisplay(EGL14.EglDefaultDisplay);
-            if (eglDisplay == EGL14.EglNoDisplay)
-                return false;
-
-            int[] version = new int[2];
-            if (!EGL14.EglInitialize(eglDisplay, version, 0, version, 1))
-                return false;
-
-            // Configure EGL for recording and OpenGL ES 2.0.
-            int[] attribList =
-            {
-                EGL14.EglRedSize, 8,
-                EGL14.EglGreenSize, 8,
-                EGL14.EglBlueSize, 8,
-                EGL14.EglAlphaSize, 8,
-                EGL14.EglDepthSize, 16,
-                EGL14.EglRenderableType, EGL14.EglOpenglEsBit,
-                EGL_RECORDABLE_ANDROID, 1,
-                EGL14.EglNone
-            };
-            EGLConfig[] configs = new EGLConfig[1];
-            int[] numConfigs = new int[1];
-            EGL14.EglChooseConfig(eglDisplay, attribList, 0, configs, 0, configs.Length, numConfigs, 0);
-            CheckEglError();
-
-            // Configure context for OpenGL ES 2.0.
-            int[] attrib_list = 
-            {
-                EGL14.EglContextClientVersion, 2,
-                EGL14.EglNone
-            };
-            eglContext = EGL14.EglCreateContext(eglDisplay, configs[0], EGL14.EglNoContext, attrib_list, 0);
-            CheckEglError();
-
-            int[] surfaceAttribs = { EGL14.EglNone };
-            eglSurface = EGL14.EglCreateWindowSurface(eglDisplay, configs[0], surface, surfaceAttribs, 0);
-            CheckEglError();
-
-            EGL14.EglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext);
-            CheckEglError();
-
-            return true;
-        }
-
-        public void ElgShutdown()
-        {
-            if (eglDisplay != EGL14.EglNoDisplay)
-            {
-                EGL14.EglMakeCurrent(eglDisplay, EGL14.EglNoSurface, EGL14.EglNoSurface, EGL14.EglNoContext);
-                EGL14.EglDestroySurface(eglDisplay, eglSurface);
-                EGL14.EglDestroyContext(eglDisplay, eglContext);
-                EGL14.EglReleaseThread();
-                EGL14.EglTerminate(eglDisplay);
-            }
-
-            surface.Release();
-
-            eglDisplay = EGL14.EglNoDisplay;
-            eglContext = EGL14.EglNoContext;
-            eglSurface = EGL14.EglNoSurface;
-
-            surface = null;
-
-            EGL14.EglMakeCurrent(prevEglDisplay, prevEglSurfaceDraw, prevEglSurfaceRead, prevEglContext);
-        }
-
-        private void CheckEglError()
-        {
-            Debug.Assert(EGL14.EglGetError() == EGL14.EglSuccess);
-        }
-
         private void DrainEncoder(MediaCodec encoder, MediaCodec.BufferInfo bufferInfo, int trackIndex, bool endOfStream)
         {
             Debug.WriteLine($"DrainEncoder {endOfStream})");
@@ -311,7 +399,6 @@ namespace FamiStudio
                 encoder.SignalEndOfInputStream();
             }
 
-            ByteBuffer[] encoderOutputBuffers = encoder.GetOutputBuffers();
             while (true)
             {
                 int encoderStatus = encoder.DequeueOutputBuffer(bufferInfo, TIMEOUT_USEC);
@@ -326,10 +413,6 @@ namespace FamiStudio
                     {
                         Debug.WriteLine("No output available, spinning to await EOS");
                     }
-                }
-                else if (encoderStatus == (int)MediaCodecInfoState.OutputBuffersChanged)
-                {
-                    encoderOutputBuffers = encoder.GetOutputBuffers();
                 }
                 else if (encoderStatus == (int)MediaCodecInfoState.OutputFormatChanged)
                 {
@@ -364,7 +447,7 @@ namespace FamiStudio
                 }
                 else
                 {
-                    ByteBuffer encodedData = encoderOutputBuffers[encoderStatus];
+                    ByteBuffer encodedData = encoder.GetOutputBuffer(encoderStatus);
                     Debug.Assert(encodedData != null);
 
                     if ((bufferInfo.Flags & MediaCodecBufferFlags.CodecConfig) != 0)

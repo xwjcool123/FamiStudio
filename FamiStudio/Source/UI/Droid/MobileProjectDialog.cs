@@ -42,6 +42,9 @@ namespace FamiStudio
         private LocalizedString DeleteProjectTitle;
         private LocalizedString ProjectDeletedToast;
 
+        private LocalizedString SaveToNewProjectRadio;
+        private LocalizedString NewProjectPrefix;
+
         public MobileProjectDialog(FamiStudio fami, string title, bool save, bool allowStorage = true)
         {
             Localization.Localize(this);
@@ -68,12 +71,12 @@ namespace FamiStudio
 
             if (save)
             {
-                userProjects.Add("Save to a New Project.");
+                userProjects.Add(SaveToNewProjectRadio);
 
                 // Generate unique name
                 for (int i = 1; ; i++)
                 {
-                    newProjectName = $"NewProject{i}";
+                    newProjectName = $"{NewProjectPrefix}{i}";
                     if (userProjects.Find(p => p.ToLower() == newProjectName.ToLower()) == null)
                         break;
                 }
@@ -99,7 +102,7 @@ namespace FamiStudio
 
             if (save)
             {
-                dialog.Properties.AddTextBox(NewProjectNameLabel, newProjectName, 0, NewProjectNameTooltip); // 1
+                dialog.Properties.AddTextBox(NewProjectNameLabel, newProjectName, 0, false, NewProjectNameTooltip); // 1
                 dialog.Properties.AddButton(DeleteSelectedProjectLabel, DeleteButton); // 2
                 dialog.Properties.SetPropertyEnabled(1, true);
                 dialog.Properties.SetPropertyEnabled(2, false);
@@ -123,6 +126,12 @@ namespace FamiStudio
             var newFile = idx == userProjects.Count - 1;
             var filename = dialog.Properties.GetPropertyValue<string>(1);
 
+            // In case user types the exact same name as exsiting project.
+            if (newFile && File.Exists(GetUserProjectFilename(filename)))
+            {
+                newFile = false;
+            }
+
             if (newFile && string.IsNullOrEmpty(filename))
             {
                 Platform.ShowToast(famistudio.Window, EnterValidFilenameToast);
@@ -133,7 +142,7 @@ namespace FamiStudio
                 Platform.MessageBoxAsync(famistudio.Window, OverwriteProjectText, OverwriteProjectTitle, MessageBoxButtons.YesNo, (r) =>
                 {
                     if (r == DialogResult.Yes)
-                        dialog.CloseWithResult(DialogResult.OK);
+                        dialog.Close(DialogResult.OK);
                 });
                 return false;
             }
@@ -194,7 +203,7 @@ namespace FamiStudio
                 // HACK : We dont support nested activities right now, so return
                 // this special code to signal that we should open from storage.
                 storageFilename = "///STORAGE///";
-                dialog.CloseWithResult(DialogResult.OK);
+                dialog.Close(DialogResult.OK);
             }
         }
 

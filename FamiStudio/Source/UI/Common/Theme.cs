@@ -22,6 +22,7 @@ namespace FamiStudio
         public static Color WhiteColor = Color.FromArgb(255, 255, 255);
 
         private static int  nextColorIdx = 39;
+        private static bool colorsInitialized = false;
 
         //
         // These are some of the shades (300 to 800) for most of the Google Material Design colors.
@@ -173,18 +174,23 @@ namespace FamiStudio
 
         public static void Initialize()
         {
-            for (int j = 0; j < CustomColors.GetLength(1); j++)
+            if (!colorsInitialized)
             {
-                for (int i = 0; i < CustomColors.GetLength(0); i++)
+                for (int j = 0; j < CustomColors.GetLength(1); j++)
                 {
-                    var color = CustomColors[i, j];
+                    for (int i = 0; i < CustomColors.GetLength(0); i++)
+                    {
+                        var color = CustomColors[i, j];
 
-                    // Make everything more pastel.
-                    CustomColors[i, j] = Color.FromArgb(
-                       Math.Min(255, color.R + 60),
-                       Math.Min(255, color.G + 60),
-                       Math.Min(255, color.B + 60));
+                        // Make everything more pastel.
+                        CustomColors[i, j] = Color.FromArgb(
+                           Math.Min(255, color.R + 60),
+                           Math.Min(255, color.G + 60),
+                           Math.Min(255, color.B + 60));
+                    }
                 }
+
+                colorsInitialized = true;
             }
         }
 
@@ -197,7 +203,7 @@ namespace FamiStudio
             return (float)MathF.Sqrt(dr * dr + dg * dg + db * db);
         }
 
-        public static void EnforceThemeColor(ref Color color)
+        public static Color EnforceThemeColor(Color color)
         {
             float minDist = 1000.0f;
             Color closestColor = CustomColors[0, 0];
@@ -207,7 +213,7 @@ namespace FamiStudio
                 for (int i = 0; i < CustomColors.GetLength(0); i++)
                 {
                     if (CustomColors[i, j] == color)
-                        return;
+                        return color;
 
                     var dist = ColorDistance(color, CustomColors[i, j]);
                     if (dist < minDist)
@@ -218,7 +224,7 @@ namespace FamiStudio
                 }
             }
 
-            color = closestColor;
+            return closestColor;
         }
 
         public static Color RandomCustomColor()
@@ -265,7 +271,7 @@ namespace FamiStudio
                 );
         }
 
-        public static void SerializeState(ProjectBuffer buffer)
+        public static void Serialize(ProjectBuffer buffer)
         {
             buffer.Serialize(ref nextColorIdx);
         }
